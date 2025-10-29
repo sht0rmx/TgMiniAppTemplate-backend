@@ -27,7 +27,11 @@ def is_date_expired(created, expire_delta: str) -> bool:
     return datetime.now() > (created + parse_expire(expire_delta))
 
 
-def create_hash(key:str, msg:str, from_env:bool=True) -> str:
-    return hmac.new(key=str(os.getenv(key) if from_env else key).encode("utf-8"),
-                            msg=msg.encode("utf-8"),
-                            digestmod=hashlib.sha256).hexdigest()
+def create_hash(key: str | bytes, msg: str, from_env: bool = True, hex: bool = True) -> str | bytes:
+    if isinstance(key, str):
+        k = str(os.getenv(key)).encode() if from_env else key.encode()
+    else:
+        k = key
+
+    h = hmac.new(k, msg.encode(), hashlib.sha256)
+    return h.hexdigest() if hex else h.digest()

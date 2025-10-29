@@ -1,7 +1,9 @@
+import asyncio
 from datetime import datetime
 import os
 import uuid
 
+from app.database.models.ApiKeys import ApiKey
 from dotenv import load_dotenv
 from sqlalchemy import select, insert, delete, update
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -98,7 +100,6 @@ class Database:
                 query = query.where(OneTimeCode.login_id == login_id)
             elif code:
                 query = query.where(OneTimeCode.code == code)
-                
             result = await dbsession.execute(query)
             login_session = result.scalars().first()
             
@@ -127,56 +128,74 @@ class Database:
             
             return code
     
-    async def update_refresh_session(self, refresh_token:str | uuid.UUID, fingerprint:str, user_id:str | uuid.UUID) -> bool:
+    async def get_api_key(self, hash:str="", user_id: str="") -> ApiKey | list[ApiKey]:
+        async with self.async_session() as dbsession:
+            query = select(ApiKey)
+            
+            if hash:
+                query = query.where(ApiKey.api_key_hash == hash)
+                result = await dbsession.execute(query)
+                return result.scalar_one()
+            elif user_id:
+                query = query.where(ApiKey.user_id == user_id)
+                result = await dbsession.execute(query)
+                return list(result.scalars().all())
+
+            else: 
+                raise NotFound("ApiKeys not founded")
+    
+    async def update_refresh_session(self, refresh_token:str | uuid.UUID, fingerprint:str, ip:str, user_id:str | uuid.UUID) -> RefreshSession:
         async with self.async_session() as dbsession:
             await self.delete_refresh_session(fingerprint=fingerprint)            
             token_hash = create_hash("REFRESH_SECRET", str(refresh_token))
             
-            await dbsession.execute(
+            res = await dbsession.execute(
                 insert(RefreshSession).values(
                     user_id=user_id,
                     refresh_token_hash=token_hash,
-                    fingerprint=fingerprint
-                )
+                    fingerprint=fingerprint,
+                    ip=ip
+                ).returning(RefreshSession)
             )
             
             await dbsession.commit()
-            return True
+            return res.scalar_one()
         
-    async def update_user(self, telegram_id:int, username:str, name:str, avatar_url:str, role="user") -> bool:
+    async def update_user(self, telegram_id:int, username:str, name:str, avatar_url:str, role="user") -> User:
         async with self.async_session() as dbsession:
-            try:
-                user = await self.get_user(telegram_id=telegram_id)
-                await dbsession.execute(
-                    update(User).values(
-                        username=username if username else user.username,
-                        name=name if name else user.name,
-                        role=role if role else user.role,
-                        avatar_url=avatar_url if avatar_url else user.avatar_url,
-                        last_seen=datetime.now(),
-                    ).where(
-                        User.id == user.id
-                    )
-                )
-                await dbsession.commit()
-                return True
+            res = await dbsession.execute(select(User).where(User.telegram_id == telegram_id))
+            user = res.scalar_one_or_none()
             
-            except NotFound:
-                if not any([username, name, avatar_url, role]):
-                    raise NotEnoughValues("You give function not enough values to create object")
-                
-                user = await dbsession.execute(
-                    insert(User).values(
-                        telegram_id=telegram_id,
-                        username=username,
-                        name=name,
-                        role=role,
-                        avatar_url=avatar_url,
-                        last_seen=datetime.now()
-                    )
-                )
+            print(user)
+
+            if user:
+                vals = {
+                    "username": username or user.username,
+                    "name": name or user.name,
+                    "role": role or user.role,
+                    "avatar_url": avatar_url or user.avatar_url,
+                    "last_seen": datetime.now(),
+                }
+
+                res = await dbsession.execute(update(User).where(User.id == user.id).values(**vals).returning(User))
                 await dbsession.commit()
-                raise NewRecord("Created new user")
+                return res.scalar_one()
+
+            if not any([username, name, avatar_url, role]):
+                raise NotEnoughValues("Not enough values to create object")
+
+            res = await dbsession.execute(
+                insert(User).values(
+                    telegram_id=telegram_id,
+                    username=username,
+                    name=name,
+                    role=role,
+                    avatar_url=avatar_url,
+                    last_seen=datetime.now(),
+                ).returning(User)
+            )
+            await dbsession.commit()
+            return res.scalar_one()
     
     async def update_user_id(self, old_id, new_id):
         async with self.async_session() as dbsession:
@@ -189,10 +208,21 @@ class Database:
             await dbsession.commit()
             return True
     
+    async def update_api_key(self, key_id: str, banned=False):
+        async with self.async_session() as dbsession:
+            await dbsession.execute(update(User).values(
+                banned=banned
+            ).where(
+                ApiKey.id == key_id
+            ))
+            
+            await dbsession.commit()
+            return True
+    
     async def create_login_session(self, code:str, fingerprint:str) -> bool:
         async with self.async_session() as dbsession:
             login_id = create_hash(fingerprint, code, from_env=False)
-            login_hash = create_hash("LOGIN_SECRET", login_id)
+            login_hash = create_hash("LOGIN_SECRET", str(login_id))
             
             await dbsession.execute(insert(OneTimeCode).values(
                 fingerprint=fingerprint,
@@ -210,6 +240,23 @@ class Database:
             await dbsession.execute(insert(RecoveryCode).values(
                 user_id=user_id,
                 code_hash=code_hash
+            ))
+            
+            await dbsession.commit()
+            return True
+    
+    async def create_api_key(self, user_id:str, name:str, api_key:str):
+        async with self.async_session() as dbsession:  
+            
+            if not api_key.startswith("sk_"):
+                raise ValueError("Api key must starts with `sk_`")
+            
+            key_hash = create_hash("API_SECRET", api_key)
+            
+            await dbsession.execute(insert(ApiKey).values(
+                user_id=user_id,
+                name=name,
+                api_key_hash=key_hash
             ))
             
             await dbsession.commit()
@@ -236,12 +283,20 @@ class Database:
             ))
             await dbsession.commit()
             return True
-        
+    
+    async def delete_api_key(self, key_id:str):
+        async with self.async_session() as dbsession:
+            await dbsession.execute(delete(ApiKey).where(
+                ApiKey.id == key_id
+            ))
+            await dbsession.commit()
+            return True
+    
     async def recovery_user(self, code:str, user_id:str|uuid.UUID) -> bool:
         async with self.async_session() as dbsession:
             try:
                 hash = create_hash("RECOVERY_SECRET", code)
-                recovery_code = await self.get_recovery_code(hash=hash)
+                recovery_code = await self.get_recovery_code(hash=str(hash))
                 await self.delete_user(user_id=str(recovery_code.user_id))
                 await self.update_user_id(old_id=user_id, new_id=recovery_code.user_id)
                                             
@@ -320,3 +375,6 @@ class Database:
 
     async def close(self) -> None:
         await self.engine.dispose()
+
+
+db_client = Database()

@@ -13,5 +13,6 @@ class RefreshSession(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     refresh_token_hash = Column(String, unique=True, nullable=False)
     fingerprint = Column(String)
+    ip = Column(String)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())

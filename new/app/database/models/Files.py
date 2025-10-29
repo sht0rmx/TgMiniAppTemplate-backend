@@ -1,7 +1,7 @@
 import uuid
 
 from app.database.models import Base
-from sqlalchemy import Column, ForeignKey, String, Boolean, DateTime
+from sqlalchemy import Column, ForeignKey, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 

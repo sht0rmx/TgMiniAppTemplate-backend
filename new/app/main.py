@@ -2,8 +2,13 @@ import os
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
+from app.database.database import db_client
 from app.api.main import api_router
+
+
+load_dotenv()
 
 
 def custom_generate_unique_id(route: APIRoute) -> str:
@@ -17,6 +22,9 @@ app = FastAPI(
 )
 
 # Set all CORS enabled origins
+
+print(list(str(os.getenv("CORS_ORIGINS")).split(",")))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(str(os.getenv("CORS_ORIGINS")).split(",")),
@@ -26,3 +34,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+@app.on_event("startup")
+async def startup():
+    await db_client.create_db()
