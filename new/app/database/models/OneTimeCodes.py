@@ -11,7 +11,7 @@ class OneTimeCode(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     login_id = Column(String, unique=True, nullable=False)
-    fingerprint = Column(String)
-    code = Column(String, nullable=False)
+    fingerprint = Column(String, nullable=False)
+    ip = Column(String, nullable=False)
     accepted = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())

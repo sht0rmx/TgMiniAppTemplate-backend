@@ -1,54 +1,114 @@
-from fastapi import Request, HTTPException
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-
-import os, jwt
-from app.utils import create_hash
-from fastapi import Request, HTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
+import os
+import jwt
+from fastapi import Depends, Request, HTTPException, WebSocket
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 
+from app.database.database import Banned, Expired, NotFound, Revoked, db_client
 
-class AuthMiddleware(BaseHTTPMiddleware):
+async def require_auth(request: Request):
+    auth = request.headers.get("authorization")
+    if not auth:
+        raise HTTPException(401, "Missing Authorization header")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "Unsupported auth header")
+
+    token = auth.split(" ")[1]
+    try:
+        payload = jwt.decode(
+            token,
+            os.getenv("JWT_SECRET"),
+            algorithms=[os.getenv("JWT_ALG", "HS256")]
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+    
+    if payload.get("is_bot") == True:
+        try:
+            await db_client.get_api_key(api_key_id=payload.get("sid"))
+        except (NotFound, Banned):
+            raise HTTPException(401, "Invalid Api key metadata")
+    else:
+        try:
+            await db_client.get_refresh_session(
+                fingerprint=request.state.fingerprint, 
+                session_id=payload.get("sid")
+                )
+        except (NotFound, Expired, Revoked):
+            raise HTTPException(401, "Invalid Refresh session metadata")
+
+    request.state.user_id = payload.get("sub")
+    request.state.role = payload.get("role")
+    request.state.session_id = payload.get("sid")
+
+    return payload
+
+
+async def websocket_auth(ws: WebSocket):
+    auth = ws.headers.get("authorization")
+    if not auth or not auth.startswith("Bearer "):
+        await ws.close(code=1008)
+        raise HTTPException(401, "Missing or invalid Authorization header")
+
+    token = auth.split(" ")[1]
+    try:
+        payload = jwt.decode(
+            token,
+            os.getenv("JWT_SECRET"),
+            algorithms=[os.getenv("JWT_ALG", "HS256")]
+        )
+    except jwt.ExpiredSignatureError:
+        await ws.close(code=1008)
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        await ws.close(code=1008)
+        raise HTTPException(401, "Invalid token")
+
+    if not payload.get("is_bot"):
+        await ws.close(code=1008)
+        raise HTTPException(401, "Connection as user")
+    
+    try:
+        await db_client.get_api_key(api_key_id=payload.get("sid"))
+    except (NotFound, Banned):
+        await ws.close(code=1008)
+        raise HTTPException(401, "Invalid API key")
+
+    if payload.get("role") != "admin":
+        await ws.close(code=1008)
+        raise HTTPException(401, "Connection denied")
+    
+    return payload
+
+
+def require_admin():
+    def _check(payload=Depends(require_auth)):
+        if payload.get("role") != "admin":
+            raise HTTPException(403, "Access denied")
+        return payload
+    return _check
+
+
+def deny_bot():
+    def _check(payload=Depends(require_auth)):
+        if payload.get("is_bot") == True:
+            raise HTTPException(403, "Access denied")
+        return payload
+    return _check
+
+
+def require_origin(request: Request):
+    allowed = os.getenv("CORS_ORIGINS", "").split(",")
+    origin = request.headers.get("origin")
+    if origin and origin not in allowed:
+        raise HTTPException(403, "Origin not allowed")
+
+
+class FingerprintMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        auth = request.headers.get("authorization")
-
-        if not auth:
-            raise HTTPException(401, "Missing Authorization header")
-
-
-        if auth.startswith("Bearer "):
-            token = auth.split(" ")[1]
-            
-            try:
-                payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=[str(os.getenv("JWT_ALG"))])
-            except jwt.ExpiredSignatureError:
-                return JSONResponse({"detail": "Token expired"}, status_code=401)
-            except jwt.InvalidTokenError:
-                return JSONResponse({"detail": "Invalid token"}, status_code=401)
-
-            request.state.user_id = payload.get("sub")
-            request.state.role = payload.get("role")
-            request.state.session_id = payload.get("sid")
-
-        elif auth.startswith("sk_"):
-            key = auth.strip()
-            key_hash = create_hash("API_SECRET", key)
-            
-            if os.getenv("API_TOKEN_HASH") != key_hash:
-                raise HTTPException(401, "Api hash incorrect")
-            
-            request.state.user_id = payload.get("sub")
-            request.state.role = payload.get("role")
-
-        else:
-            raise HTTPException(401, "Unsupported auth type")
-
-        return await call_next(request)
-
-
-class RoleMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        ...
-
+        fingerprint = request.headers.get("fingerprint", None)
+        
+        request.state.fingerprint = fingerprint
         return await call_next(request)

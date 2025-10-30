@@ -1,20 +1,22 @@
 import json
 import os
 import uuid
+from app.middleware.auth import deny_bot, require_origin
 from app.services.auth.AuthService import AuthUtils
-from app.shemes.login_models import WebAppLoginRequest, User
-from app.utils import parse_expire
-from fastapi import APIRouter, Header, Request
+from app.shemes.models import WebAppLoginRequest, User
+from app.utils import create_hash, parse_expire, gen_code
+from fastapi import APIRouter, Depends, Request
 from urllib.parse import parse_qs
 from fastapi.responses import JSONResponse
 
-from app.database.database import db_client
+from app.api.routes.auth.sse.manager import sse_manager
+from app.database.database import Expired, NotFound, db_client
 from pydantic import ValidationError
 
 router = APIRouter(prefix="/login", tags=["login"])
 
 
-@router.post("/webapp")
+@router.post("/webapp", dependencies=[Depends(require_origin)])
 async def webapp_login(request_data: WebAppLoginRequest, request: Request):
     parsed = {k: v[0] for k, v in parse_qs(request_data.initData).items()}
     
@@ -33,30 +35,22 @@ async def webapp_login(request_data: WebAppLoginRequest, request: Request):
         avatar_url=user_data.photo_url)
         
     
-    fingerprint = request.headers.get("fingerprint", "default")
-    ip = request.client.host if request.client else "127.0.0.1"
-    refresh_token = uuid.uuid4()
+    fingerprint = request.state.fingerprint
+    if not fingerprint:
+        return JSONResponse({"detail":"Missing fingerprint"}, status_code=400)
     
-    session = await db_client.update_refresh_session(
+    ip = request.client.host if request.client else "127.0.0.1"
+    
+    refresh_token = str(uuid.uuid4())
+    
+    session = await db_client.create_refresh_session(
         refresh_token=refresh_token, 
         fingerprint=fingerprint, 
         ip=ip,
         user_id=str(user.id))
     
-    user_entity = {
-        "id": str(user.id),
-        "telegram_id": user.telegram_id,
-        "username": user.username,
-        "name": user.name,
-        "role": user.role,
-        "avatar_url": user.avatar_url,
-        "last_seen": user.last_seen.isoformat(),
-        "created_at": user.created_at.isoformat()
-    }
-
-    
-    access_token = AuthUtils.gen_jwt_token(user_id=user.id, session_id=session.id)
-    resp = JSONResponse(content={"access_token": access_token, "user": user_entity}, status_code=200)
+    access_token = AuthUtils.gen_jwt_token(user_id=user.id, session_id=session.id, role=str(user.role))
+    resp = JSONResponse(content={"access_token": access_token}, status_code=200)
     
     resp.set_cookie(
         key="refresh_token",
@@ -68,3 +62,90 @@ async def webapp_login(request_data: WebAppLoginRequest, request: Request):
     )
     
     return resp
+
+
+@router.get("/api-key")
+async def bot_login(request: Request):
+    auth = request.headers.get("authorization", "default").strip()
+    
+    if not auth.startswith("Breaer"):
+        return JSONResponse({"detail": "Auth header must starts with `Breaer`"}, status_code=401)
+    
+    token = auth.split(" ")[1]
+    
+    if not token.startswith("sk_"):
+        return JSONResponse({"detail": "Api key must starts with `sk_`"}, status_code=401)
+    
+    
+    key_hash = create_hash("API_SECRET", token)
+    
+    try:
+        api_key = await db_client.get_api_key(hash=str(key_hash))
+    except NotFound:
+        return JSONResponse({"detail": "Api key not founded"}, status_code=401)
+    
+    user = await db_client.get_user(uid=str(api_key.user_id))
+    access_token = AuthUtils.gen_jwt_token(user_id=user.id, session_id=api_key.id, role=str(user.role), is_bot=True)
+    
+    user_entity = {
+        "id": str(user.id),
+        "telegram_id": user.telegram_id,
+        "username": user.username,
+        "name": user.name,
+        "role": user.role,
+        "avatar_url": user.avatar_url,
+        "last_seen": user.last_seen.isoformat(),
+        "created_at": user.created_at.isoformat()
+    }
+    
+    return JSONResponse(content={"access_token": access_token, "user": user_entity}, status_code=200)
+
+
+@router.get("/getqr", dependencies=[Depends(require_origin)])
+async def get_qr_code(request: Request):
+    fingerprint = request.state.fingerprint
+    if not fingerprint:
+        return JSONResponse({"detail":"Missing fingerprint"}, status_code=400)
+    
+    code = gen_code(length=8)
+    ip = request.client.host if request.client else "127.0.0.1"
+    login_id = await db_client.create_login_session(code=code, fingerprint=fingerprint, ip=ip)
+    
+    return JSONResponse({"login_id": login_id}, status_code=200)
+
+
+@router.get("/search/{loginid}", dependencies=[Depends(require_origin), Depends(deny_bot)])
+async def check_login(loginid:str):
+    login_hash = create_hash("LOGIN_SECRET", loginid)
+    
+    try:
+        await db_client.get_login_session(login_hash=str(login_hash))
+        return JSONResponse({"detail":"Login found"}, status_code=200)
+    except (NotFound, Expired):
+        return JSONResponse({"detail":"Login not founded"}, status_code=400)
+    
+    
+@router.get("/accept/{loginid}", dependencies=[Depends(require_origin), Depends(deny_bot)])
+async def validate_login(request: Request, loginid:str):
+    user_id = request.state.user_id
+    role = request.state.role
+    
+    if not user_id:
+        return JSONResponse({"detail":"Missing user_id"}, status_code=400)
+    
+    login_hash = create_hash("LOGIN_SECRET", loginid)
+    
+    try:
+        login = await db_client.accept_login(login_hash=str(login_hash))
+        token = str(uuid.uuid4())
+        session = await db_client.create_refresh_session(
+            refresh_token=token, 
+            fingerprint=str(login.fingerprint), 
+            ip=str(login.ip),
+            user_id=user_id)
+        
+        access_token = AuthUtils.gen_jwt_token(user_id=user_id, session_id=session.id, role=role)
+        await sse_manager.push_event(login_id=loginid, data={"access_token": access_token})        
+        return JSONResponse({"detail":"OK!"}, status_code=200)
+    except (NotFound, Expired):
+        return JSONResponse({"detail":"Login not founded"}, status_code=400)

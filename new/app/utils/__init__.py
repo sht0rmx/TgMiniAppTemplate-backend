@@ -2,7 +2,9 @@ from datetime import datetime, timedelta
 import hashlib
 import hmac
 import os
+import random
 import re
+import string
 
 
 def parse_expire(date: str) -> timedelta:
@@ -35,3 +37,8 @@ def create_hash(key: str | bytes, msg: str, from_env: bool = True, hex: bool = T
 
     h = hmac.new(k, msg.encode(), hashlib.sha256)
     return h.hexdigest() if hex else h.digest()
+
+
+def gen_code(length=16):
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=length))

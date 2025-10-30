@@ -14,3 +14,6 @@ class User(BaseModel):
 class WebAppLoginRequest(BaseModel):
     initData: str
 
+
+class RecoveryRequest(BaseModel):
+    recovery_code: str

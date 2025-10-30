@@ -5,7 +5,7 @@ import uuid
 
 from app.database.models.ApiKeys import ApiKey
 from dotenv import load_dotenv
-from sqlalchemy import select, insert, delete, update
+from sqlalchemy import and_, select, insert, delete, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio.session import async_sessionmaker, AsyncSession
 
@@ -38,7 +38,13 @@ class Revoked(DBError):
 class Expired(DBError):
     pass
 
+class Banned(DBError):
+    pass
+
 class NewRecord(DBError):
+    pass
+
+class AlreadyCreated(DBError):
     pass
 
 class NotEnoughValues(DBError):
@@ -54,24 +60,30 @@ class Database:
             class_=AsyncSession,
         )
         
-    async def get_refresh_session(self, refresh_token:str, fingerprint:str) -> RefreshSession:
-        async with self.async_session() as dbsession:
-            result = await dbsession.execute(select(RefreshSession).where(
-                RefreshSession.refresh_token_hash == refresh_token,
-                RefreshSession.fingerprint == fingerprint
-            ))
-            session = result.scalars().first()
+    async def get_refresh_session(self, refresh_token:str="", fingerprint:str="", session_id:str="") -> RefreshSession:
+            token_hash = create_hash("REFRESH_SECRET", refresh_token) if refresh_token else None
             
-            if not session:
-                raise NotFound("Session with tis params not founded!")
-            
-            if session.revoked is True:
-                raise Revoked("Session was revoked!")
-            
-            if is_date_expired(created=session.created_at, expire_delta=str(os.getenv("REFRESH_EXPIRE"))):
-                raise Expired("Session expired!")
-            
-            return session
+            async with self.async_session() as dbsession:
+                conditions = [RefreshSession.fingerprint == fingerprint]
+                
+                if token_hash:
+                    conditions.append(RefreshSession.refresh_token_hash == token_hash)
+                if session_id:
+                    conditions.append(RefreshSession.id == session_id)
+                
+                result = await dbsession.execute(select(RefreshSession).where(and_(*conditions)))
+                session = result.scalars().first()
+                
+                if not session:
+                    raise NotFound("Session not found with given parameters")
+                
+                if bool(session.revoked):
+                    raise Revoked("Session was revoked")
+                
+                if is_date_expired(created=session.used_at, expire_delta=os.getenv("REFRESH_EXPIRE", "60d")):
+                    raise Expired("Session expired")
+                
+                return session
     
     async def get_user(self, uid:str | uuid.UUID="", telegram_id:int=0, username:str="") -> User:
         async with self.async_session() as dbsession:
@@ -92,12 +104,12 @@ class Database:
             
             return user
     
-    async def get_login_session(self, login_id:str="", code:str="") -> OneTimeCode:
+    async def get_login_session(self, login_hash:str="", code:str="") -> OneTimeCode:
         async with self.async_session() as dbsession:
             query = select(OneTimeCode)
             
-            if login_id:
-                query = query.where(OneTimeCode.login_id == login_id)
+            if login_hash:
+                query = query.where(OneTimeCode.login_id == login_hash)
             elif code:
                 query = query.where(OneTimeCode.code == code)
             result = await dbsession.execute(query)
@@ -128,36 +140,83 @@ class Database:
             
             return code
     
-    async def get_api_key(self, hash:str="", user_id: str="") -> ApiKey | list[ApiKey]:
+    async def get_api_key(self, hash:str="", api_key_id:str="") -> ApiKey:
         async with self.async_session() as dbsession:
             query = select(ApiKey)
             
-            if hash:
+            if api_key_id:
+                query = query.where(ApiKey.id == api_key_id)
+            elif hash:
                 query = query.where(ApiKey.api_key_hash == hash)
-                result = await dbsession.execute(query)
-                return result.scalar_one()
-            elif user_id:
-                query = query.where(ApiKey.user_id == user_id)
-                result = await dbsession.execute(query)
-                return list(result.scalars().all())
+            else:
+                raise ValueError("Either hash or api_key_id must be provided")
 
-            else: 
-                raise NotFound("ApiKeys not founded")
-    
-    async def update_refresh_session(self, refresh_token:str | uuid.UUID, fingerprint:str, ip:str, user_id:str | uuid.UUID) -> RefreshSession:
+            result = await dbsession.execute(query)
+            api_key = result.scalar_one_or_none()
+
+            if not api_key:
+                raise NotFound("API key not found")
+            if bool(api_key.banned):
+                raise Banned("API key is blocked")
+
+            return api_key
+            
+    async def get_api_keys_for_user(self, user_id:str) -> list[ApiKey]:
         async with self.async_session() as dbsession:
-            await self.delete_refresh_session(fingerprint=fingerprint)            
+            query = select(ApiKey).where(ApiKey.user_id == user_id)
+            result = await dbsession.execute(query)
+            api_keys = list(result.scalars().all())
+            
+            if len(api_keys) == 0:
+                raise NotFound("ApiKeys not founded")
+            
+            return api_keys
+    
+    async def get_files(self, user_id: str | uuid.UUID, limit: int = 100) -> list[File]:
+        async with self.async_session() as dbsession:
+            result = await dbsession.execute(
+                select(File).where(File.uploaded_by == user_id).limit(limit)
+            )
+            return list(result.scalars().all())
+    
+    async def get_file(self, file_id: str, key:str) -> bytes:
+        if file_id:
+            async with self.async_session() as dbsession:
+                result = await dbsession.execute(
+                    select(File).where(File.id == file_id)
+                )
+                key = str(result.scalar_one().key)
+            
+        return await self.storage.download_file(key=key)
+    
+    async def create_refresh_session(self, refresh_token:str, fingerprint:str, ip:str, user_id:str | uuid.UUID) -> RefreshSession:
+        async with self.async_session() as dbsession:
             token_hash = create_hash("REFRESH_SECRET", str(refresh_token))
             
-            res = await dbsession.execute(
-                insert(RefreshSession).values(
-                    user_id=user_id,
-                    refresh_token_hash=token_hash,
-                    fingerprint=fingerprint,
-                    ip=ip
-                ).returning(RefreshSession)
-            )
-            
+            await self.delete_refresh_session(fingerprint=fingerprint)
+            query = insert(RefreshSession).values(
+                refresh_token_hash=token_hash,
+                fingerprint=fingerprint,
+                ip=ip,
+                user_id=user_id
+            ).returning(RefreshSession)
+        
+
+            res = await dbsession.execute(query)
+            await dbsession.commit()
+            return res.scalar_one()
+    
+    async def update_refresh_session(self, fingerprint:str, ip:str) -> RefreshSession:
+        async with self.async_session() as dbsession:
+            session = await self.get_refresh_session(fingerprint=fingerprint)
+            query = update(RefreshSession).values(
+                ip=ip,
+                used_at=datetime.now()
+            ).where(
+                RefreshSession.id == session.id
+            ).returning(RefreshSession)
+    
+            res = await dbsession.execute(query)
             await dbsession.commit()
             return res.scalar_one()
         
@@ -219,31 +278,48 @@ class Database:
             await dbsession.commit()
             return True
     
-    async def create_login_session(self, code:str, fingerprint:str) -> bool:
+    async def upload_file(self, user_id: str | uuid.UUID, data: bytes, filename: str) -> bool:
+        key = await self.storage.upload_file(
+            key=f"{user_id}/{uuid.uuid4()}-{filename}", 
+            data=data)
+
+        async with self.async_session() as dbsession:
+            await dbsession.execute(insert(File).values(
+                    uploaded_by=user_id,
+                    key=key
+                )
+            )
+            await dbsession.commit()
+            return True
+    
+    async def create_login_session(self, code:str, fingerprint:str, ip:str) -> str:
         async with self.async_session() as dbsession:
             login_id = create_hash(fingerprint, code, from_env=False)
             login_hash = create_hash("LOGIN_SECRET", str(login_id))
             
             await dbsession.execute(insert(OneTimeCode).values(
                 fingerprint=fingerprint,
-                code=code,
-                login_id=login_hash
+                login_id=login_hash,
+                ip=ip
             ))
             
             await dbsession.commit()
-            return True
+            return str(login_id)
     
     async def create_recovery_code(self, user_id:str | uuid.UUID, code:str) -> bool:
-        async with self.async_session() as dbsession:            
-            code_hash = create_hash("RECOVERY_SECRET", code)
+        async with self.async_session() as dbsession:             
+            try:
+                code = await self.get_recovery_code(user_id=user_id)
+                raise AlreadyCreated("Recovery code can be generated only one time")
+            except NotFound:
+                code_hash = create_hash("RECOVERY_SECRET", code)
+                await dbsession.execute(insert(RecoveryCode).values(
+                    user_id=user_id,
+                    code_hash=code_hash
+                ))
             
-            await dbsession.execute(insert(RecoveryCode).values(
-                user_id=user_id,
-                code_hash=code_hash
-            ))
-            
-            await dbsession.commit()
-            return True
+                await dbsession.commit()
+                return True
     
     async def create_api_key(self, user_id:str, name:str, api_key:str):
         async with self.async_session() as dbsession:  
@@ -292,62 +368,6 @@ class Database:
             await dbsession.commit()
             return True
     
-    async def recovery_user(self, code:str, user_id:str|uuid.UUID) -> bool:
-        async with self.async_session() as dbsession:
-            try:
-                hash = create_hash("RECOVERY_SECRET", code)
-                recovery_code = await self.get_recovery_code(hash=str(hash))
-                await self.delete_user(user_id=str(recovery_code.user_id))
-                await self.update_user_id(old_id=user_id, new_id=recovery_code.user_id)
-                                            
-                return True
-            except NotFound:
-                raise NotFound("Recovery failed, user or recovery code not found")
-        
-    async def accept_login(self, code:str, login_id:str) -> bool:
-        async with self.async_session() as dbsession:
-            try: 
-                login_session = await self.get_login_session(login_id=login_id, code=code)
-                
-                await dbsession.execute(update(OneTimeCode).values(
-                        accepted=True
-                    ).where(
-                        OneTimeCode.id == login_session.id
-                    ))
-                
-                await dbsession.commit()
-                return True
-            except NotFound:
-                raise NotFound("can`t accept session!")
-            
-            except Expired:
-                raise Expired("Login expired, please create new login code")
-    
-    async def clear_db(self):
-        async with self.async_session() as dbsession:
-            await dbsession.execute(delete(RefreshSession).where(
-                RefreshSession.revoked == True,
-                RefreshSession.created_at <= (datetime.now() - parse_expire(str(os.getenv("REFRESH_EXPIRE"))))
-            ))
-            await dbsession.execute(delete(OneTimeCode).where(
-                OneTimeCode.accepted == True,
-                OneTimeCode.created_at <= (datetime.now() - parse_expire(str(os.getenv("LOGIN_EXPIRE"))))
-            ))
-
-    async def upload_file(self, user_id: str | uuid.UUID, data: bytes, filename: str) -> bool:
-        key = await self.storage.upload_file(
-            key=f"{user_id}/{uuid.uuid4()}-{filename}", 
-            data=data)
-
-        async with self.async_session() as dbsession:
-            await dbsession.execute(insert(File).values(
-                    uploaded_by=user_id,
-                    key=key
-                )
-            )
-            await dbsession.commit()
-            return True
-
     async def delete_file(self, file_id: str | uuid.UUID) -> bool:
         async with self.async_session() as db:
             result = await db.execute(select(File).where(File.id == file_id))
@@ -361,13 +381,57 @@ class Database:
             await db.execute(delete(File).where(File.id == file_id))
             await db.commit()
             return True
-
-    async def list_files(self, user_id: str | uuid.UUID, limit: int = 100) -> list[File]:
-        async with self.async_session() as db:
-            result = await db.execute(
-                select(File).where(File.uploaded_by == user_id).limit(limit)
-            )
-            return list(result.scalars().all())
+    
+    async def recovery_user(self, code:str, user_id:str|uuid.UUID) -> bool:
+        try:
+            hash = create_hash("RECOVERY_SECRET", code)
+            recovery_code = await self.get_recovery_code(hash=str(hash))
+            await self.delete_user(user_id=str(recovery_code.user_id))
+            await self.update_user_id(old_id=user_id, new_id=recovery_code.user_id)
+                                        
+            return True
+        except NotFound:
+            raise NotFound("Recovery failed, user or recovery code not found")
+        
+    async def accept_login(self, login_hash:str) -> OneTimeCode:
+        async with self.async_session() as dbsession:
+            try: 
+                login_session = await self.get_login_session(login_hash=login_hash)
+                
+                res = await dbsession.execute(update(OneTimeCode).values(
+                        accepted=True
+                    ).where(
+                        OneTimeCode.id == login_session.id
+                    ).returning(OneTimeCode))
+                
+                await dbsession.commit()
+                return res.scalar_one()
+            except NotFound:
+                raise NotFound("can`t accept session!")
+            
+            except Expired:
+                raise Expired("Login expired, please create new login code")
+    
+    async def revoke_refresh_session(self, fingerprint:str, revoked:bool=True):
+        async with self.async_session() as dbsession:
+            await dbsession.execute(update(RefreshSession).values(
+                revoked=revoked
+                ).where(
+                RefreshSession.fingerprint == fingerprint
+            ))
+            await dbsession.commit()
+            return True
+    
+    async def clear_db(self):
+        async with self.async_session() as dbsession:
+            await dbsession.execute(delete(RefreshSession).where(
+                RefreshSession.revoked == True,
+                RefreshSession.used_at <= (datetime.now() - parse_expire(str(os.getenv("REFRESH_EXPIRE"))))
+            ))
+            await dbsession.execute(delete(OneTimeCode).where(
+                OneTimeCode.accepted == True,
+                OneTimeCode.created_at <= (datetime.now() - parse_expire(str(os.getenv("LOGIN_EXPIRE"))))
+            ))
     
     async def create_db(self) -> None:
         async with self.engine.begin() as conn:

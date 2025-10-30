@@ -10,13 +10,14 @@ class AuthUtils:
         pass
     
     @staticmethod
-    def gen_jwt_token(user_id, session_id, role="user") -> str:
+    def gen_jwt_token(user_id, session_id, role="user", is_bot:bool=False) -> str:
         delta = parse_expire(os.getenv("ACCESS_EXPITRE", "30m"))
 
         payload = {
             "sub": str(user_id),
             "sid": str(session_id),
             "role": str(role),
+            "is_bot": bool(is_bot),
             "exp": datetime.now() + delta
         }
         return jwt.encode(payload, os.getenv("JWT_SECRET"), algorithm=os.getenv("JWT_ALG", "HS256"))

@@ -1,4 +1,4 @@
-import os
+from app.middleware.auth import FingerprintMiddleware
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
@@ -23,16 +23,15 @@ app = FastAPI(
 
 # Set all CORS enabled origins
 
-print(list(str(os.getenv("CORS_ORIGINS")).split(",")))
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(str(os.getenv("CORS_ORIGINS")).split(",")),
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.add_middleware(FingerprintMiddleware)
 app.include_router(api_router, prefix="/api/v1")
 
 @app.on_event("startup")
