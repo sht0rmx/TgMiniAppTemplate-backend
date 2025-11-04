@@ -8,7 +8,7 @@ from app.utils import parse_user_agent_data
 
 router = APIRouter(prefix="/session", tags=["Sessions"])
 
-@router.get("/curent", dependencies=[Depends(require_origin), Depends(require_auth)])
+@router.get("/current", dependencies=[Depends(require_origin), Depends(require_auth)])
 async def current_session(request: Request):
     session_id = request.state.session_id
     fingerprint = request.state.fingerprint
@@ -19,7 +19,7 @@ async def current_session(request: Request):
     session = await db_client.get_refresh_session(fingerprint=fingerprint)
     
     info = parse_user_agent_data(str(session.user_agent))
-    return JSONResponse({"ip": session.ip, "lastUsed": session.used_at, "info": info})
+    return JSONResponse({"ip": session.ip, "lastUsed": session.used_at.isoformat(), "info": info})
     
 @router.get("/all", dependencies=[Depends(require_origin), Depends(require_auth)])
 async def all_sessions(request: Request):

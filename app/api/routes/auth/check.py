@@ -10,7 +10,6 @@ router = APIRouter(tags=["check"])
 @router.get("/check", dependencies=[Depends(require_auth)])
 async def check(request: Request):
     try:
-        print(request.state.user_id)
         user = await db_client.get_user(uid=request.state.user_id)
         
         user_entity = {

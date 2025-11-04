@@ -1,17 +1,20 @@
 import json
 import os
+import time
 import uuid
-from app.middleware.auth import deny_bot, require_origin
-from app.services.auth.AuthService import AuthUtils
-from app.shemes.models import WebAppLoginRequest, User
-from app.utils import create_hash, parse_expire, gen_code
-from fastapi import APIRouter, Depends, Header, Request
+
 from urllib.parse import parse_qs
+from pydantic import ValidationError
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
 from app.api.routes.auth.sse.manager import sse_manager
 from app.database.database import Expired, NotFound, db_client
-from pydantic import ValidationError
+from app.middleware.auth import deny_bot, require_origin
+from app.services.auth.AuthService import AuthUtils
+from app.shemes.models import WebAppLoginRequest, User
+from app.utils import create_hash, parse_expire, gen_code
+
 
 router = APIRouter(prefix="/login", tags=["login"])
 
@@ -19,6 +22,15 @@ router = APIRouter(prefix="/login", tags=["login"])
 @router.post("/webapp", dependencies=[Depends(require_origin)])
 async def webapp_login(request_data: WebAppLoginRequest, request: Request, user_agent:str = Header(default="")):
     parsed = {k: v[0] for k, v in parse_qs(request_data.initData).items()}
+    
+    if not parsed["auth_date"]:
+        return JSONResponse({"detail": "authdate not founded"}, status_code=401)
+    
+    auth_time = parsed["auth_date"]
+    current_time = int(time.time())
+    
+    if abs(current_time - int(auth_time)) >= (5*60):
+        return JSONResponse({"detail": "authdate so old! max 5min"}, status_code=401)
     
     try:
         user_data = User(**json.loads(parsed["user"]))
@@ -28,6 +40,7 @@ async def webapp_login(request_data: WebAppLoginRequest, request: Request, user_
     if not AuthUtils.check_initdata(initdata=request_data.initData, hash_str=parsed["hash"]):
         return JSONResponse({"detail": "InitData validation failed"}, status_code=401)
     
+        
     user = await db_client.update_user(
         telegram_id=user_data.id, 
         username=user_data.username, 
