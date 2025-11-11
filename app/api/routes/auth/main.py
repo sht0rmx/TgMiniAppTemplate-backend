@@ -1,7 +1,7 @@
-from app.api.routes.auth import check, login, token
-from app.api.routes.auth.sse import sse
 from fastapi import APIRouter
 
+from app.api.routes.auth import check, login, token
+from app.api.routes.auth.sse import sse
 
 sub_router = APIRouter(prefix="/auth", tags=["Auth"])
 

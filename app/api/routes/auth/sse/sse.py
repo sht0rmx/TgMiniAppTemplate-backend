@@ -1,9 +1,9 @@
-
 import asyncio
+
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from app.api.routes.auth.sse.manager import sse_manager
 
+from app.api.routes.auth.sse.manager import sse_manager
 
 router = APIRouter(prefix="/sse", tags=["sse"])
 

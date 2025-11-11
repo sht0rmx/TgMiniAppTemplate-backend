@@ -1,10 +1,9 @@
 import asyncio
 import json
-from typing import Dict
 
 class SSEManager:
     def __init__(self):
-        self.queues: Dict[str, asyncio.Queue] = {}
+        self.queues: dict[str, asyncio.Queue] = {}
 
     def get_queue(self, login_id: str) -> asyncio.Queue:
         if login_id not in self.queues:
@@ -16,8 +15,17 @@ class SSEManager:
 
     async def event_generator(self, login_id: str):
         queue = self.get_queue(login_id)
+        print(f"[SSE] start stream for {login_id}")
+        yield f"data: {json.dumps({'type': 'connected'})}\n\n"
+
         while True:
-            event = await queue.get()
-            yield f"data: {json.dumps(event)}\n\n"
-            
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=20)
+                print(f"[SSE] sending {event}")
+                yield f"data: {json.dumps(event)}\n\n"
+            except TimeoutError:
+                print(f"[SSE] keepalive {login_id}")
+                yield ": keep-alive\n\n"
+
+
 sse_manager = SSEManager()
