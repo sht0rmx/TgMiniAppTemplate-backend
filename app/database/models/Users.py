@@ -1,9 +1,10 @@
 import uuid
 
-from app.database.models import Base
-from sqlalchemy import Column, BigInteger, String, DateTime
+from sqlalchemy import BigInteger, Column, DateTime, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+
+from app.database.models import Base
 
 
 class User(Base):

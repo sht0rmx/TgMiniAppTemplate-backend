@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
 import hashlib
 import hmac
 import os
 import random
 import re
 import string
+from datetime import UTC, datetime, timedelta
+
 from user_agents import parse
 
 
@@ -26,8 +27,9 @@ def parse_expire(date: str) -> timedelta:
         raise ValueError(f"Unknown unit: {unit}")
 
 
-def is_date_expired(created, expire_delta: str) -> bool:    
-    return datetime.now() > (created + parse_expire(expire_delta))
+def is_date_expired(created, expire_delta: str) -> bool:
+    return datetime.now() > created + parse_expire(expire_delta) + timedelta(hours=3)
+
 
 
 def create_hash(key: str | bytes, msg: str, from_env: bool = True, hex: bool = True) -> str | bytes:

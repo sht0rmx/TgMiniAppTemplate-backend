@@ -1,9 +1,10 @@
 import uuid
 
-from app.database.models import Base
-from sqlalchemy import Column, String, Boolean, DateTime
+from sqlalchemy import Boolean, Column, DateTime, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+
+from app.database.models import Base
 
 
 class OneTimeCode(Base):
@@ -14,4 +15,4 @@ class OneTimeCode(Base):
     fingerprint = Column(String, nullable=False)
     ip = Column(String, nullable=False)
     accepted = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=func.now(),)

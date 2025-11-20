@@ -1,9 +1,9 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
-from sqlalchemy import and_, delete, insert, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio.session import AsyncSession, async_sessionmaker
 
@@ -121,15 +121,11 @@ class Database:
             return user
 
     async def get_login_session(
-        self, login_hash: str = "", code: str = ""
+        self, login_hash: str = ""
     ) -> OneTimeCode:
         async with self.async_session() as dbsession:
-            query = select(OneTimeCode)
-
-            if login_hash:
-                query = query.where(OneTimeCode.login_id == login_hash)
-            elif code:
-                query = query.where(OneTimeCode.code == code)
+            print(login_hash)
+            query = select(OneTimeCode).where(OneTimeCode.login_id == login_hash)
             result = await dbsession.execute(query)
             login_session = result.scalars().first()
 
@@ -137,9 +133,10 @@ class Database:
                 raise NotFound("login session not found")
 
             if is_date_expired(
-                created=login_session.created_at,
+                created=login_session.created_at + timedelta(hours=3),
                 expire_delta=str(os.getenv("LOGIN_EXPIRE")),
             ):
+                print("sse loginid expired", login_session.created_at, datetime.now())
                 raise Expired("Login session expired!")
 
             return login_session
@@ -460,22 +457,24 @@ class Database:
 
     async def clear_db(self):
         async with self.async_session() as dbsession:
+            print("[DB] clearing!")
             await dbsession.execute(
-                delete(RefreshSession).where(
+                delete(RefreshSession).where(or_(
                     RefreshSession.revoked == True,
                     RefreshSession.used_at
                     <= (
                         datetime.now() - parse_expire(str(os.getenv("REFRESH_EXPIRE")))
-                    ),
+                    ))
                 )
             )
             await dbsession.execute(
-                delete(OneTimeCode).where(
+                delete(OneTimeCode).where(or_(
                     OneTimeCode.accepted == True,
                     OneTimeCode.created_at
                     <= (datetime.now() - parse_expire(str(os.getenv("LOGIN_EXPIRE")))),
-                )
+                ))
             )
+            await dbsession.commit()
 
     async def create_db(self) -> None:
         async with self.engine.begin() as conn:

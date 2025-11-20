@@ -26,6 +26,7 @@ dependencies = [
     "uvicorn>=0.38.0",
     "aioboto3>=15.5.0",
     "user-agents>=2.2.0",
+    "apscheduler>=3.11.1",
 ]
 
 

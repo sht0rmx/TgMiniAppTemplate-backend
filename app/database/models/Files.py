@@ -1,9 +1,10 @@
 import uuid
 
-from app.database.models import Base
-from sqlalchemy import Column, ForeignKey, String, DateTime
+from sqlalchemy import Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+
+from app.database.models import Base
 
 
 class File(Base):
