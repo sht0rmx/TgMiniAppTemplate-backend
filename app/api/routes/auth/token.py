@@ -16,16 +16,16 @@ router = APIRouter(prefix="/token", tags=["tokens"])
 
 # recreate session token
 @router.get(
-    "/recreate-tokens", dependencies=[Depends(require_origin), Depends(deny_bot)]
+    "/recreate-tokens", dependencies=[Depends(require_origin), Depends(deny_bot), Depends(require_auth)]
 )
 async def get_refresh_token(request: Request, user_agent: str = Header(default="")):
-    fingerprint = request.state.fingerprint
-    user_id = request.state.user_id
-
-    if not fingerprint or not user_id:
+    if not hasattr(request.state, "fingerprint") or not hasattr(request.state, "user_id"):
         return JSONResponse(
             {"detail": "Missing fingerprint or user_id"}, status_code=400
         )
+
+    fingerprint = request.state.fingerprint
+    user_id = request.state.user_id
 
     ip = request.client.host if request.client else "127.0.0.1"
     refresh_token = str(uuid.uuid4())
@@ -59,10 +59,10 @@ async def get_refresh_token(request: Request, user_agent: str = Header(default="
 # get jwt and update session token
 @router.get("/get-tokens", dependencies=[Depends(require_origin)])
 async def get_access_token(request: Request):
-    fingerprint = request.state.fingerprint
-
-    if not fingerprint:
+    if not hasattr(request.state, "fingerprint"):
         return JSONResponse({"detail": "Missing fingerprint"}, status_code=400)
+
+    fingerprint = request.state.fingerprint
 
     refresh_token = request.cookies.get("refresh_token")
 
@@ -110,10 +110,10 @@ async def get_access_token(request: Request):
 # revoke refresh session
 @router.get("/revoke", dependencies=[Depends(require_origin), Depends(deny_bot)])
 async def revoke_resresh_session(request: Request):
-    fingerprint = request.state.fingerprint
-
-    if not fingerprint:
+    if not hasattr(request.state, "fingerprint"):
         return JSONResponse({"detail": "Missing fingerprint"}, status_code=400)
+
+    fingerprint = request.state.fingerprint
 
     await db_client.revoke_refresh_session(fingerprint=fingerprint, revoked=True)
 
@@ -125,10 +125,10 @@ async def revoke_resresh_session(request: Request):
 # generate recovery code
 @router.get("/recovery", dependencies=[Depends(require_origin), Depends(require_auth)])
 async def generate_recovery(request: Request):
-    user_id = request.state.user_id
-
-    if not user_id:
+    if not hasattr(request.state, "user_id"):
         return JSONResponse({"detail": "Missing user_id"}, status_code=400)
+
+    user_id = request.state.user_id
 
     try:
         code = gen_code(length=16)
@@ -149,10 +149,11 @@ async def generate_recovery(request: Request):
 # transfer user
 @router.post("/transfer", dependencies=[Depends(require_origin), Depends(deny_bot)])
 async def transfer_user(request_data: RecoveryRequest, request: Request):
+    if not hasattr(request.state, "user_id"):
+        return JSONResponse({"detail": "Missing user_id"}, status_code=400)
+
     user_id = request.state.user_id
 
-    if not user_id:
-        return JSONResponse({"detail": "Missing user_id"}, status_code=400)
     try:
         await db_client.recovery_user(code=request_data.recovery_code, user_id=user_id)
         return JSONResponse(content={"detail": "Transfer successfull"}, status_code=200)
