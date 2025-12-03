@@ -7,7 +7,7 @@ from app.services.auth.AuthService import AuthUtils
 from app.shemes.models import RecoveryRequest
 from app.utils import parse_expire, gen_code
 from app.database.database import Expired, NotFound, Revoked, db_client, AlreadyCreated
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Cookie, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
 
@@ -50,21 +50,21 @@ async def get_refresh_token(request: Request, user_agent: str = Header(default="
         value=str(refresh_token),
         httponly=True,
         max_age=int(parse_expire(os.getenv("REFRESH_EXPIRE", "60d")).total_seconds()),
-        secure=True,
+        secure=not bool(os.getenv("DEV", "")),
         samesite="lax",
+        path="/"
     )
+
     return resp
 
 
 # get jwt and update session token
 @router.get("/get-tokens", dependencies=[Depends(require_origin)])
-async def get_access_token(request: Request):
+async def get_access_token(request: Request, refresh_token: str | None = Cookie(default=None),):
     if not hasattr(request.state, "fingerprint"):
         return JSONResponse({"detail": "Missing fingerprint"}, status_code=400)
 
     fingerprint = request.state.fingerprint
-
-    refresh_token = request.cookies.get("refresh_token")
 
     if not refresh_token:
         return JSONResponse(
@@ -77,7 +77,7 @@ async def get_access_token(request: Request):
     ip = request.client.host if request.client else "127.0.0.1"
 
     try:
-        session = await db_client.update_refresh_session(fingerprint=fingerprint, ip=ip)
+        session = await db_client.update_refresh_session(fingerprint=fingerprint, ip=ip, rt_key=refresh_token)
 
         user = await db_client.get_user(uid=str(session.user_id))
 
@@ -90,12 +90,11 @@ async def get_access_token(request: Request):
             key="refresh_token",
             value=str(refresh_token),
             httponly=True,
-            max_age=int(
-                parse_expire(os.getenv("REFRESH_EXPIRE", "60d")).total_seconds()
-            ),
-            secure=True,
+            max_age=int(parse_expire(os.getenv("REFRESH_EXPIRE", "60d")).total_seconds()),
+            secure=not bool(os.getenv("DEV", "")),
             samesite="lax",
         )
+
 
         return resp
     except (NotFound, Revoked, Expired):

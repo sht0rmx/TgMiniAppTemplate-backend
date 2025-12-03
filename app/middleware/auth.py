@@ -1,10 +1,11 @@
 import os
-import jwt
-from fastapi import Depends, Request, HTTPException, WebSocket
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+import jwt
+from fastapi import Depends, HTTPException, Request, WebSocket
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.database.database import Banned, Expired, NotFound, Revoked, db_client
+
 
 async def require_auth(request: Request):
     auth = request.headers.get("authorization")
@@ -24,8 +25,8 @@ async def require_auth(request: Request):
         raise HTTPException(401, "Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Invalid token")
-    
-    if payload.get("is_bot") == True:
+
+    if payload.get("is_bot"):
         try:
             await db_client.get_api_key(api_key_id=payload.get("sid"))
         except (NotFound, Banned):
@@ -33,7 +34,7 @@ async def require_auth(request: Request):
     else:
         try:
             await db_client.get_refresh_session(
-                fingerprint=request.state.fingerprint, 
+                fingerprint=request.state.fingerprint,
                 session_id=payload.get("sid")
                 )
         except (NotFound, Expired, Revoked):
@@ -69,7 +70,7 @@ async def websocket_auth(ws: WebSocket):
     if not payload.get("is_bot"):
         await ws.close(code=1008)
         raise HTTPException(401, "Connection as user")
-    
+
     try:
         await db_client.get_api_key(api_key_id=payload.get("sid"))
     except (NotFound, Banned):
@@ -79,7 +80,7 @@ async def websocket_auth(ws: WebSocket):
     if payload.get("role") != "admin":
         await ws.close(code=1008)
         raise HTTPException(401, "Connection denied")
-    
+
     return payload
 
 
@@ -93,7 +94,7 @@ def require_admin():
 
 def deny_bot():
     def _check(payload=Depends(require_auth)):
-        if payload.get("is_bot") == True:
+        if payload.get("is_bot"):
             raise HTTPException(403, "Access denied")
         return payload
     return _check
@@ -109,6 +110,5 @@ def require_origin(request: Request):
 class FingerprintMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         fingerprint = request.headers.get("fingerprint", None)
-        
         request.state.fingerprint = fingerprint
         return await call_next(request)

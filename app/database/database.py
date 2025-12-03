@@ -207,9 +207,9 @@ class Database:
 
         return await self.storage.download_file(key=key)
 
-    async def update_refresh_session(self, fingerprint: str, ip: str) -> RefreshSession:
+    async def update_refresh_session(self, fingerprint: str, ip: str, rt_key: str) -> RefreshSession:
         async with self.async_session() as dbsession:
-            session = await self.get_refresh_session(fingerprint=fingerprint)
+            session = await self.get_refresh_session(fingerprint=fingerprint, refresh_token=rt_key)
             query = (
                 update(RefreshSession)
                 .values(ip=ip, used_at=datetime.now())
@@ -218,8 +218,13 @@ class Database:
             )
 
             res = await dbsession.execute(query)
+            session = res.scalar_one_or_none()
+
+            if not session:
+                raise NotFound("Session with params not founded")
+
             await dbsession.commit()
-            return res.scalar_one()
+            return session
 
     async def update_user(
         self, telegram_id: int, username: str, name: str, avatar_url: str, role="user"

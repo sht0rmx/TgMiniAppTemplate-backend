@@ -26,7 +26,7 @@ async def webapp_login(
 ):
     parsed = {k: v[0] for k, v in parse_qs(request_data.initData).items()}
 
-    if not parsed["auth_date"]:
+    if not parsed.get("auth_date", None):
         return JSONResponse({"detail": "authdate not founded"}, status_code=401)
 
     auth_time = parsed["auth_date"]
@@ -78,7 +78,7 @@ async def webapp_login(
         value=str(refresh_token),
         httponly=True,
         max_age=int(parse_expire(os.getenv("REFRESH_EXPIRE", "60d")).total_seconds()),
-        secure=True,
+        secure=not bool(os.getenv("DEV", "")),
         samesite="lax",
     )
 

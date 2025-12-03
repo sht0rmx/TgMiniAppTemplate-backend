@@ -27,6 +27,7 @@ dependencies = [
     "aioboto3>=15.5.0",
     "user-agents>=2.2.0",
     "apscheduler>=3.11.1",
+    "redis>=7.1.0",
 ]
 
 

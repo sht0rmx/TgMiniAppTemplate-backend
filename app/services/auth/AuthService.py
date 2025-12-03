@@ -1,14 +1,16 @@
-from datetime import datetime
 import os
+from datetime import datetime
 from urllib.parse import unquote
-from app.utils import create_hash, parse_expire
+
 import jwt
+
+from app.utils import create_hash, parse_expire
 
 
 class AuthUtils:
     def __init__(self) -> None:
         pass
-    
+
     @staticmethod
     def gen_jwt_token(user_id, session_id, role="user", is_bot:bool=False) -> str:
         delta = parse_expire(os.getenv("ACCESS_EXPITRE", "30m"))
